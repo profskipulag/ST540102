@@ -1,4 +1,4 @@
-# ST540202 warch_and_fetch.py
+# ST540202 watch_and_fetch.py
 A package for automatically updating and fetching environmental observations for DT-GEO WP5 DTC4. The package consists of `pywaf`, a package that contains some helper classes, including
 
  * `RawApi`, a class that provides all the functionality of the Umhverfisstonum web API, including
