@@ -1,4 +1,4 @@
-# ST540202 watch_and_fetch.py
+# ST540102 watch_and_fetch.py
 A package for automatically updating and fetching environmental observations for DT-GEO WP5 DTC4. The package consists of `pywaf`, a package that contains some helper classes, including
 
  * `RawApi`, a class that provides all the functionality of the Umhverfisstonum web API, including
@@ -32,7 +32,7 @@ The useage of `API` is illustarted in the Jupyter notebook `notebook.ipynb`, and
 ## To download the repository
 Clone the repository to your machine
 
-    git clone https://github.com/profskipulag/ST540202.git
+    git clone https://github.com/profskipulag/ST540102.git
 
 You will be asked for your username and password. For the password github now requires a token:
 - on github, click yur user icon in the top right corner
@@ -48,10 +48,10 @@ Create a new conda environment from the environment.yaml file:
 
 Activate the environment
 
-    conda activate st540202
+    conda activate st540102
     
 Launch the notebook server
 
     jupyter notebook
     
-Navigate to the st540202 directory and click the file `notebook.ipynb` to launch it.
+Navigate to the st540102 directory and click the file `notebook.ipynb` to launch it.
