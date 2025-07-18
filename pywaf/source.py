@@ -1,6 +1,9 @@
 import os
+import glob
 import json
+import time
 import urllib
+import requests
 import datetime
 import numpy as np
 import pandas as pd
@@ -58,7 +61,7 @@ class RawApi:
         return self.get(base_url + local_id)
 
 
-class Api:
+class UmmhverfistofnumApi:
     """Fetches data from Umhverfisstofnum's web API, facilitating search
     by date, species and latlon bounding box, and returns the data combined 
     with metadata
@@ -360,6 +363,477 @@ class Api:
         
         axs[0].legend(bbox_to_anchor=(1.1, 1.05))
         axs[1].legend(bbox_to_anchor=(1.1, 1.05))
+
+
+
+
+
+class CopernicusAPI:
+
+    def __init__(self, 
+                 client_id, client_secret,
+                 base_url="https://catalogue.dataspace.copernicus.eu/odata/v1/Products", 
+                 access_token_url = 'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token',
+                 download_dir= "local_storage"
+                ):
+
+        self.base_url = base_url
+        
+        self.download_dir = download_dir
+
+        self.access_token_url = access_token_url
+        
+        self.access_token =  self.get_access_token( access_token_url, client_id, client_secret)
+
+        if not os.path.exists(download_dir):
+            os.makedirs(download_dir)
+
+        #print("Access token:",self.access_token)
+
+    
+    def get_access_token(self, url, client_id, client_secret):
+        response = requests.post(
+            url,
+            data={"grant_type": "client_credentials"},
+            auth=(client_id, client_secret),
+        )
+        return response.json()["access_token"]
+    
+    def search(self, min_lat, max_lat, min_lon, max_lon, start_datetime, end_datetime):
+
+        start_date = datetime.datetime.strftime(start_datetime, "%Y-%m-%d")
+
+        end_date = datetime.datetime.strftime(end_datetime, "%Y-%m-%d")
+
+        # Current (counter-clockwise):
+        bbox_query_clockwise = (f"OData.CSC.Intersects(area=geography'SRID=4326;"
+                      f"POLYGON(({min_lon} {min_lat},"
+                      f"{max_lon} {min_lat},"
+                      f"{max_lon} {max_lat},"
+                      f"{min_lon} {max_lat},"
+                      f"{min_lon} {min_lat}))')")
+        
+        # Try clockwise instead:
+        bbox_query_anti = (f"OData.CSC.Intersects(area=geography'SRID=4326;"
+                      f"POLYGON(({min_lon} {min_lat},"
+                      f"{min_lon} {max_lat},"
+                      f"{max_lon} {max_lat},"
+                      f"{max_lon} {min_lat},"
+                      f"{min_lon} {min_lat}))')")
+
+        # Create the filter string
+        filter_params = [
+            bbox_query_clockwise,
+            "Collection/Name eq 'SENTINEL-5P'",
+            f"ContentDate/Start gt {start_date}T00:00:00.000Z",
+            f"ContentDate/Start lt {end_date}T23:59:59.999Z",
+            "contains(Name,'_L2__SO2__')" , # This filters for SO2 products
+            #"contains(Name,'_03_')",         # Filter for collection 03
+           # "contains(Name,'_OFFL_')"         # Filter for collection 03
+
+
+        ]
+        
+        # Combine all filters with 'and'
+        filter_string = " and ".join(filter_params)
+        
+        # Construct the full URL
+        url = f"{self.base_url}?$filter={filter_string}&$top=100" #
+        
+        # Make the request
+        response = requests.get(url)
+        json_data = response.json()
+
+        data = json_data.get('value', [])
+
+        files = [d['Name'] for d in data]
+        
+        # Print the URL for debugging
+        print(f"Query URL: {url}")
+        print(f"Number of products found: {len(files)}")
+
+        return json_data
+
+
+    def search_point(self, lat, lon,tart_datetime, end_datetime):
+
+        start_date = datetime.datetime.strftime(start_datetime, "%Y-%m-%d")
+
+        end_date = datetime.datetime.strftime(end_datetime, "%Y-%m-%d")
+        
+        # Create the filter string
+        filter_params = [
+            f"OData.CSC.Intersects(area=geography'SRID=4326;POINT({lon} {lat})')",
+            "Collection/Name eq 'SENTINEL-5P'",
+            f"ContentDate/Start gt {start_date}T00:00:00.000Z",
+            f"ContentDate/Start lt {end_date}T23:59:59.999Z",
+            "contains(Name,'L2__SO2')",  # This filters for SO2 products
+            "contains(Name,'_03_')",         # Filter for collection 03
+            "contains(Name,'_OFFL_')"         # Filter for collection 03
+
+        ]
+        
+        # Combine all filters with 'and'
+        filter_string = " and ".join(filter_params)
+        
+        # Construct the full URL
+        url = f"{self.base_url}?$filter={filter_string}&$top=20"
+        
+        # Make the request
+        response = requests.get(url)
+        json_data = response.json()
+
+        data = json_data.get('value', [])
+
+        files = [d['Name'] for d in data]
+        
+        # Print the URL for debugging
+        print(f"Query URL: {url}")
+        print(f"Number of products found: {len(files)}")
+
+        return json_data
+
+
+    
+    # Function to download a product
+    def download_product(self, product_id, product_name, access_token):
+
+        download_url = f"https://zipper.dataspace.copernicus.eu/odata/v1/Products({product_id})/$value"
+
+        
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}"
+        }
+        
+        filepath = os.path.join(self.download_dir, f"{product_name}")
+        
+        # Skip if already downloaded
+        if os.path.exists(filepath):
+            print(f"Already downloaded: {product_name}")
+            return
+        
+        print(f"Downloading: {product_name}")
+        
+        # Download with streaming to handle large files
+        with requests.get(download_url, headers=headers, stream=True) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            
+            with open(filepath, 'wb') as f:
+                downloaded = 0
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = (downloaded / total_size) * 100
+                            print(f"Progress: {progress:.1f}%", end='\r')
+        
+        print(f"\nCompleted: {product_name}")
+
+    def search_and_download(self, min_lat, max_lat, min_lon, max_lon, start_date, end_date):
+
+        json_data = self.search(min_lat, max_lat, min_lon, max_lon, start_date, end_date)
+
+        # Main download process
+        if json_data.get('value'):
+            print("\nStarting downloads...")
+            
+            # Download each product
+            for product in json_data.get('value', []):
+                product_id = product['Id']
+                product_name = product['Name']
+                
+                
+                print(f"\nProduct: {product_name}")
+                print(f"Date: {product['ContentDate']['Start']}")
+                print(f"Size: {product.get('ContentLength', 0) / (1024**2):.1f} MB")
+                
+                try:
+                    self.download_product( product_id, product_name, self.access_token)
+                    time.sleep(1)  # Be polite to the server
+                except Exception as e:
+                    print(f"Error downloading {product_name}: {e}")
+                    continue
+            
+            print(f"\nDownloads complete! Files saved to: {self.download_dir}")
+        else:
+            print("No products found for the specified criteria")
+        
+        # Optional: Print summary of downloaded files
+        files = []
+        print("\nDownloaded files:")
+        search_string = os.path.join(self.download_dir,"*L2__SO2*.nc")
+        
+        for file in glob.glob(search_string): #os.listdir(self.download_dir):
+            if file.endswith('.nc'):
+                #file_path = os.path.join(self.download_dir, file)
+                files.append(file)
+                file_size = os.path.getsize(file) / (1024**2)
+                print(f"  {file} ({file_size:.1f} MB)")
+
+        return files
+    
+    def search_and_download_latest(self, min_lat, max_lat, min_lon, max_lon, start_date, end_date):
+        
+        json_data = self.search(min_lat, max_lat, min_lon, max_lon, start_date, end_date)
+        
+            
+        ids = [p['Id']for p in json_data.get('value', [])]
+        
+        names = [p['Name'] for p in json_data.get('value', [])]
+        
+        info = np.array([n.replace("___","_").replace("__","_").replace(".","_").split("_") for n in names])
+        
+        df_all = pd.DataFrame({
+            "satellite":info[:,0],
+            "type":info[:,1],
+            "level":info[:,2],
+            "species":info[:,3],
+            "start":info[:,4],
+            "end":info[:,5],
+            "orbit":info[:,6],
+            "collection":info[:,7],
+            "processor":info[:,8],
+            "creation":info[:,9],
+            "file type":info[:,10],
+            "file name":names,
+            "id":ids
+        })
+        
+        df_all['start'] = df_all['start'].apply(lambda r: datetime.datetime.strptime(r, "%Y%m%dT%H%M%S"))
+        df_all['end'] = df_all['end'].apply(lambda r: datetime.datetime.strptime(r, "%Y%m%dT%H%M%S"))
+        df_all['creation'] = df_all['creation'].apply(lambda r: datetime.datetime.strptime(r, "%Y%m%dT%H%M%S"))
+        
+        df_latest = pd.concat([
+            gp[gp['creation']==gp['creation'].max()] for name, gp in df_all.groupby("start")
+        ])
+    
+        for i, r in df_latest.iterrows():
+            self.download_product(r['id'],r['file name'], self.access_token)
+
+        #files = df_latest['file name'].values
+    
+        #return files
+        return df_latest
+
+    def extract_data(self, file, min_lat, max_lat, min_lon, max_lon):
+
+        print(file)
+
+        ds = xr.open_dataset(file, group='PRODUCT')
+
+        ds = ds.drop(['layer','corner'])
+
+        ds_sub=(
+                (ds['latitude']>min_lat)&
+                (ds['latitude']<max_lat)&
+                (ds['longitude']>min_lon)&
+                (ds['longitude']<max_lon)
+            )
+
+        df=(
+                ds
+                .where(ds_sub)
+                .dropna(dim='scanline', how='all')
+                .dropna(dim='ground_pixel', how='all')
+                .to_dataframe()
+                .reset_index()
+            )
+            
+            
+        df = df[df['latitude'].notna()]
+
+        df['file'] = file
+            
+        return(df)
+        
+        
+        
+
+    def fetch_data(self, min_lat, max_lat, min_lon, max_lon, start_date, end_date):
+
+        #lon  = (min_lon + max_lon)/2
+
+        #lat = (min_lat + max_lat)/2
+
+        files = self.search_and_download(min_lat, max_lat, min_lon, max_lon, start_date, end_date)
+
+        dfs = [self.extract_data(file, min_lat, max_lat, min_lon, max_lon) for file in files]
+
+        df = pd.concat(dfs, axis=0)
+
+        df = df[df['sulfurdioxide_total_vertical_column'].notna()].reset_index()
+
+        return df
+
+    def fetch_latest_data(self, min_lat, max_lat, min_lon, max_lon, start_date, end_date):
+
+        #lon  = (min_lon + max_lon)/2
+
+        #lat = (min_lat + max_lat)/2
+
+        df_latest = self.search_and_download_latest(min_lat, max_lat, min_lon, max_lon, start_date, end_date)
+
+        #files  = [os.path.join(self.download_dir, f) for f in files]
+        df_latest['file name'] = df_latest['file name'].apply(lambda file: os.path.join(self.download_dir, file))
+        
+        #dfs = [self.extract_data(file, min_lat, max_lat, min_lon, max_lon) for file in files]
+        dfs = []
+
+        for i, r in df_latest.iterrows():
+
+            df = self.extract_data(r['file name'], min_lat, max_lat, min_lon, max_lon)
+
+            for name, val in r.items():
+                df[name] = val
+
+            dfs.append(df)
+            
+
+        df = pd.concat(dfs, axis=0)
+
+        df = df[df['sulfurdioxide_total_vertical_column'].notna()].reset_index(drop=True)
+
+        return df
+
+    
+
+
+
+class Observations:
+
+    def __init__(self, copernicus_client_id, copernicus_client_secret, local_storage='local_storage'):
+
+        self.copernicus_client_id = copernicus_client_id
+
+        self.copernicus_client_secret = copernicus_client_secret
+
+        self.local_storage = local_storage
+
+        self.uapi = UmmhverfistofnumApi(local_storage=local_storage)
+
+        self.capi = CopernicusAPI(copernicus_client_id, copernicus_client_secret, download_dir=local_storage)
+
+        
+
+
+    def fetch(self, minlat, maxlat, minlon, maxlon, start, end):
+
+        result = self.uapi.get_data(start=start, end=end, minlat=minlat, maxlat=maxlat, minlon=minlon, maxlon=maxlon,  species = 'SO2')
+
+        # NOTE! Copernicus API automatically adds 23:59:59 to the end date
+        end  = end - datetime.timedelta(days=1)
+    
+        df = self.capi.fetch_latest_data(minlat, maxlat, minlon, maxlon, start, end)
+    
+        return xr.merge([result, df.to_xarray()])
+        
+    
+    
+    def plot_data(self, data, qa_threshold=0.5):
+                
+        plt.figure("Test Map",figsize=(20,20))
+        crs = ccrs.PlateCarree()
+        
+        ax0 = plt.subplot(311, projection=crs)
+
+        ax0.coastlines(resolution='10m',color='blue')
+        
+        ax0.gridlines(draw_labels=True, dms=False, x_inline=False, y_inline=False)
+        
+        ax1 = plt.subplot(312)
+    
+        
+        
+        axs = [ax1, ax0]
+        
+        for name in data:
+            
+            if "#" in name:
+                
+                local_id, species, type  = name.split('#')
+                
+                full_name  = data.attrs[local_id]
+                
+                label = " ".join([local_id, full_name])
+                
+                if type=='value':
+                    
+                    data[name].plot(ax=axs[0],label=label)
+                    
+                    lat = data[name].attrs['lat']
+            
+                    lon = data[name].attrs['lon']
+            
+                    axs[1].scatter([lon],[lat],label=label)
+    
+        df = data[[
+            'latitude',
+            'longitude',
+            'sulfurdioxide_total_vertical_column', 
+            'sulfurdioxide_total_vertical_column_precision',
+            'delta_time',
+            'time',
+            'orbit',
+            'qa_value'
+        ]].to_dataframe()
+        
+        groupby = df.groupby('orbit')
+    
+        num = len(groupby)
+    
+        ylim = [df['latitude'].min(),df['latitude'].max()]
+    
+        xlim = [df['longitude'].min(),df['longitude'].max()]
+    
+        
+        for i, (date, gp) in enumerate(groupby):
+    
+            ijk = int("3" + str(num) + str(i+1+6))
+        
+            ax2 = plt.subplot(ijk, projection=crs)
+    
+            ax2.coastlines(resolution='10m',color='blue')
+        
+            ax2.gridlines(draw_labels=False, dms=False, x_inline=False, y_inline=False)
+    
+        
+            dt = gp['delta_time'].mean()
+    
+            gp = gp[gp['qa_value']>qa_threshold]
+    
+            scatter = ax2.scatter(
+                gp['longitude'],
+                gp['latitude'],
+                c=gp['sulfurdioxide_total_vertical_column'],
+                transform=crs,  # Important for cartopy!
+                s=20  # Adjust marker size as needed
+            )
+            
+            # Add title
+            ax2.set_title(dt)
+            
+            # Add horizontal colorbar
+            cbar = plt.colorbar(scatter, ax=ax2, orientation='horizontal', 
+                                pad=0.1, shrink=0.8)
+    
+            ax2.set_xlim(xlim)
+            ax2.set_ylim(ylim)
+    
+            ax2.set_xticks([])
+            ax2.set_yticks([])
+    
+        
+        
+        axs[0].legend(bbox_to_anchor=(1.1, 1.05))
+        
+        axs[1].legend(bbox_to_anchor=(1.1, 1.05))
+    
+        # Adjust the colorbar position if needed
+        #plt.tight_layout()
+        #plt.show()
 
 
 
